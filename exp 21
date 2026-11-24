@@ -1,0 +1,207 @@
+opencv-python
+numpy
+
+#!/usr/bin/env python3
+"""Standalone Computer Vision lab experiment. All paths are relative to this folder."""
+from pathlib import Path
+import argparse, cv2, numpy as np
+BASE=Path(__file__).resolve().parent
+INPUT=BASE/'input'
+OUT=BASE/'screenshots'
+IMAGE=INPUT/'sample.jpg'
+VIDEO=INPUT/'sample.mp4'
+
+def save(name, image):
+    OUT.mkdir(exist_ok=True)
+    cv2.imwrite(str(OUT/name), image)
+
+def panel(images, labels):
+    resized=[]
+    for im, label in zip(images, labels):
+        if im is None: continue
+        if len(im.shape)==2: im=cv2.cvtColor(im,cv2.COLOR_GRAY2BGR)
+        im=cv2.resize(im,(320,240))
+        cv2.rectangle(im,(0,0),(320,32),(25,25,25),-1)
+        cv2.putText(im,label,(8,23),cv2.FONT_HERSHEY_SIMPLEX,.55,(255,255,255),1,cv2.LINE_AA)
+        resized.append(im)
+    if not resized: return
+    rows=[]
+    for i in range(0,len(resized),2):
+        row=resized[i:i+2]
+        if len(row)==1: row.append(np.zeros_like(row[0]))
+        rows.append(np.hstack(row))
+    save('output_preview.png',np.vstack(rows))
+
+def run(show=False):
+    n=21
+    if n in (7,26,27,28,39,40):
+        cap=cv2.VideoCapture(str(VIDEO))
+        if not cap.isOpened(): raise SystemExit(f'Cannot open {VIDEO}')
+        fps=cap.get(cv2.CAP_PROP_FPS) or 12
+        frames=[]
+        while True:
+            ok,fr=cap.read()
+            if not ok: break
+            frames.append(fr)
+        cap.release()
+        if n==7:
+            sample=frames[len(frames)//2]; slow=sample.copy(); fast=sample.copy()
+            panel([frames[0],sample,frames[-1]],['NORMAL VIDEO','SLOW MOTION FRAME','FAST MOTION FRAME'])
+            print(f'Loaded {len(frames)} frames at {fps:.1f} FPS. Slow playback uses a longer delay; fast playback uses a shorter delay.')
+            if show:
+                for delay in (int(1000/fps),int(2000/fps),max(1,int(500/fps))):
+                    for fr in frames: cv2.imshow('Video playback',fr); cv2.waitKey(delay)
+                cv2.destroyAllWindows()
+        elif n in (26,27,39):
+            rev=list(reversed(frames))
+            out_path=BASE/('reversed_video.mp4' if n!=39 else 'reversed_slow_video.mp4')
+            out=cv2.VideoWriter(str(out_path),cv2.VideoWriter_fourcc(*'mp4v'),max(1,fps//2) if n==39 else fps,(frames[0].shape[1],frames[0].shape[0]))
+            for fr in rev: out.write(fr)
+            out.release(); panel([frames[0],rev[0],rev[-1]],['ORIGINAL FIRST','REVERSED FIRST','REVERSED LAST'])
+            print(f'Saved reversed video: {out_path.name} ({len(rev)} frames).')
+        elif n==28:
+            bg=cv2.createBackgroundSubtractorMOG2(history=100,varThreshold=32,detectShadows=False)
+            annotated=[]
+            for fr in frames:
+                mask=bg.apply(fr); mask=cv2.morphologyEx(mask,cv2.MORPH_OPEN,np.ones((3,3),np.uint8))
+                contours,_=cv2.findContours(mask,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE); vis=fr.copy()
+                for c in contours:
+                    if cv2.contourArea(c)>500:
+                        x,y,w,h=cv2.boundingRect(c); cv2.rectangle(vis,(x,y),(x+w,y+h),(0,255,0),2)
+                annotated.append(vis)
+            panel([frames[len(frames)//2],annotated[len(annotated)//2]],['INPUT VIDEO FRAME','MOTION REGIONS (NOT VEHICLE CLASSIFIER)'])
+            print('Vehicle-like motion regions are marked. This classical background-subtraction demo does not classify vehicle types.')
+        else:
+            fr=frames[len(frames)//2].copy()
+            try:
+                import pytesseract
+                text=pytesseract.image_to_string(fr).strip()
+                cv2.putText(fr,'OCR completed',(10,30),cv2.FONT_HERSHEY_SIMPLEX,.8,(0,150,0),2)
+                print('Extracted text:\n'+(text or '[No text detected]'))
+            except (ImportError, OSError) as e:
+                cv2.putText(fr,'Install Tesseract OCR to extract text',(10,30),cv2.FONT_HERSHEY_SIMPLEX,.65,(0,0,255),2)
+                print('OCR unavailable. Install pytesseract and the Tesseract OCR engine; see README. Preview shows the real video frame, not fabricated OCR results.')
+            panel([frames[len(frames)//2],fr],['VIDEO FRAME','OCR STATUS'])
+        return
+    img=cv2.imread(str(IMAGE))
+    if img is None: raise SystemExit(f'Cannot read sample image: {IMAGE}')
+    gray=cv2.cvtColor(img,cv2.COLOR_BGR2GRAY); result=None; labels=['INPUT IMAGE']
+    if n==1: result=gray; labels+=['GRAYSCALE']
+    elif n==2: result=cv2.GaussianBlur(img,(15,15),0); labels+=['GAUSSIAN BLUR']
+    elif n==3: result=cv2.Canny(gray,100,200); labels+=['CANNY EDGES']
+    elif n==4: result=cv2.equalizeHist(gray); labels+=['EQUALIZED GRAYSCALE']
+    elif n==5:
+        hist_img=np.zeros((300,512,3),np.uint8)
+        for ch,col in enumerate(((255,80,0),(0,255,0),(0,0,255))):
+            hist=cv2.calcHist([img],[ch],None,[256],[0,256]); cv2.normalize(hist,hist,0,280,cv2.NORM_MINMAX)
+            pts=np.int32([[i*2,299-int(v)] for i,v in enumerate(hist)]); cv2.polylines(hist_img,[pts],False,col,2)
+        result=hist_img; labels+=['BGR COLOR HISTOGRAM']
+    elif n in (6,19): result=cv2.erode(img,np.ones((5,5),np.uint8),iterations=1); labels+=['ERODED']
+    elif n in (8,20): result=cv2.dilate(img,np.ones((5,5),np.uint8),iterations=1); labels+=['DILATED']
+    elif n==9: result=cv2.resize(img,None,fx=.5,fy=.5,interpolation=cv2.INTER_AREA); labels+=['HALF SIZE']
+    elif n in (10,11,12): result=cv2.rotate(img,{10:cv2.ROTATE_90_CLOCKWISE,11:cv2.ROTATE_180,12:cv2.ROTATE_90_COUNTERCLOCKWISE}[n]); labels+=['ROTATED']
+    elif n==13:
+        h,w=img.shape[:2]; M=cv2.getAffineTransform(np.float32([[0,0],[w-1,0],[0,h-1]]),np.float32([[w*.1,h*.2],[w*.9,h*.1],[w*.2,h*.9]])); result=cv2.warpAffine(img,M,(w,h)); labels+=['AFFINE TRANSFORM']
+    elif n==14:
+        h,w=img.shape[:2]; src=np.float32([[0,0],[w-1,0],[0,h-1],[w-1,h-1]]); dst=np.float32([[50,40],[w-70,0],[0,h-30],[w-1,h-1]]); result=cv2.warpPerspective(img,cv2.getPerspectiveTransform(src,dst),(w,h)); labels+=['PERSPECTIVE TRANSFORM']
+    elif n==15:
+        f=np.float32(gray); corners=cv2.cornerHarris(f,2,3,.04); vis=img.copy(); vis[corners>0.01*corners.max()]=(0,0,255); result=vis; labels+=['HARRIS CORNERS']
+    elif n==16:
+        sx=cv2.Sobel(gray,cv2.CV_64F,1,0,ksize=3); sy=cv2.Sobel(gray,cv2.CV_64F,0,1,ksize=3); result=cv2.convertScaleAbs(cv2.magnitude(sx,sy)); labels+=['SOBEL EDGES']
+    elif n==17:
+        result=img.copy(); cv2.putText(result,'OpenCV',(30,55),cv2.FONT_HERSHEY_SIMPLEX,1.3,(255,255,255),3,cv2.LINE_AA); labels+=['WATERMARK']
+    elif n==18:
+        result=img.copy(); roi=img[80:250,80:300].copy(); result[260:430,330:550]=cv2.resize(roi,(220,170)); cv2.rectangle(result,(80,80),(300,250),(0,0,255),2); labels+=['ROI COPY / PASTE']
+    elif n==21: result=cv2.morphologyEx(img,cv2.MORPH_OPEN,np.ones((5,5),np.uint8)); labels+=['OPENING']
+    elif n==22: result=cv2.morphologyEx(img,cv2.MORPH_CLOSE,np.ones((5,5),np.uint8)); labels+=['CLOSING']
+    elif n==23: result=cv2.morphologyEx(img,cv2.MORPH_TOPHAT,np.ones((15,15),np.uint8)); labels+=['TOP HAT']
+    elif n==24: result=cv2.morphologyEx(img,cv2.MORPH_BLACKHAT,np.ones((15,15),np.uint8)); labels+=['BLACK HAT']
+    elif n==25:
+        # Classical contour/shape candidate localization; not a trained semantic classifier.
+        result=img.copy(); edges=cv2.Canny(gray,50,150); contours,_=cv2.findContours(edges,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
+        for c in sorted(contours,key=cv2.contourArea,reverse=True)[:5]:
+            if cv2.contourArea(c)>1000:
+                x,y,w,h=cv2.boundingRect(c); cv2.rectangle(result,(x,y),(x+w,y+h),(0,255,0),2)
+        labels+=['WATCH / SHAPE CANDIDATES']
+    elif n==29 or n==30 or n==38:
+        result=img.copy(); base=cv2.data.haarcascades
+        file='haarcascade_eye.xml' if n==29 else ('haarcascade_smile.xml' if n==30 else 'haarcascade_frontalface_default.xml')
+        cascade=cv2.CascadeClassifier(base+file)
+        if cascade.empty(): raise RuntimeError('OpenCV Haar cascade could not be loaded.')
+        found=cascade.detectMultiScale(gray,scaleFactor=1.1,minNeighbors=5,minSize=(20,20))
+        for (x,y,w,h) in found: cv2.rectangle(result,(x,y),(x+w,y+h),(0,255,0),2)
+        labels += [{29:'EYE DETECTION',30:'SMILE DETECTION',38:f'FACES COUNTED: {len(found)}'}[n]]
+        print(f'Detections: {len(found)}. Replace sample.jpg with a suitable, consented face image for meaningful results.')
+    elif n==31:
+        _,result=cv2.threshold(gray,127,255,cv2.THRESH_BINARY); labels+=['THRESHOLD 127']
+    elif n==32:
+        h,w=480,640; result=np.ones((h,w,3),np.uint8)*255; bh,bw=h//10,w//10
+        for (x,y,c) in [(0,0,(0,0,0)),(w-bw,0,(255,0,0)),(0,h-bh,(0,255,0)),(w-bw,h-bh,(0,0,255))]: cv2.rectangle(result,(x,y),(x+bw,y+bh),c,-1)
+        labels+=['FOUR CORNER BOXES']
+    elif n==33:
+        result=np.ones((480,640,3),np.uint8)*255; cv2.rectangle(result,(100,100),(540,380),(255,0,0),4); labels+=['RECTANGLE']
+    elif n==34:
+        result=np.ones((480,640,3),np.uint8)*255; cv2.circle(result,(320,240),120,(0,0,255),4); labels+=['CIRCLE']
+    elif n==35:
+        result=np.ones((480,640,3),np.uint8)*255; cv2.putText(result,'Computer Vision',(60,250),cv2.FONT_HERSHEY_SIMPLEX,1.5,(0,0,0),3); labels+=['USER TEXT SAMPLE']
+    elif n in (36,37):
+        hsv=cv2.cvtColor(img,cv2.COLOR_BGR2HSV); lower=np.array([35,40,40]); upper=np.array([85,255,255]); mask=cv2.inRange(hsv,lower,upper)
+        result=cv2.bitwise_and(img,img,mask=mask) if n==37 else cv2.bitwise_and(img,img,mask=cv2.bitwise_not(mask)); labels += ['FOREGROUND COLOR MASK' if n==37 else 'BACKGROUND (NON-GREEN)']
+    else: raise ValueError(f'No implementation for experiment {n}')
+    panel([img,result],labels)
+    save('processed_output.png',result)
+    print(f'Experiment {n:02d} completed. Output saved to screenshots/processed_output.png')
+    if show:
+        cv2.imshow('Input',img); cv2.imshow('Output',result); cv2.waitKey(0); cv2.destroyAllWindows()
+
+if __name__=='__main__':
+    p=argparse.ArgumentParser(description='Run this standalone Computer Vision experiment.')
+    p.add_argument('--show',action='store_true',help='Display result windows (requires a desktop GUI).')
+    run(p.parse_args().show)
+
+# Experiment 21: Morphological Opening
+
+**Aim:** Implement the Opening morphological operation using OpenCV to remove small foreground noise.
+
+## Software requirements
+- Python 3.9 or later
+- OpenCV and NumPy (see `requirements.txt`)
+
+
+## Algorithm
+1. Load the sample input from this experiment's local `input/` folder.
+2. Validate that the image/video was loaded successfully.
+3. Apply the OpenCV operation for this experiment.
+4. Save the processed result and a side-by-side output preview in `screenshots/`.
+
+## Procedure
+1. Open a terminal in this folder.
+2. Install dependencies: `python -m pip install -r requirements.txt`.
+3. Run: `python experiment.py`.
+4. For image experiments, replace `input/sample.jpg` with your own image (keep the same filename). For video experiments, replace `input/sample.mp4`.
+5. Optional: use `python experiment.py --show` to open display windows on a desktop.
+
+## Sample input
+- `input/sample.jpg` (included with this experiment).
+
+## Expected output
+A processed image or video is saved locally. Image experiments save `screenshots/processed_output.png` and `screenshots/output_preview.png`. Video experiments save an output preview; reverse-video experiments also create a video file in this folder. Exact detection results depend on the input content.
+
+## Source code
+- `experiment.py`
+
+## Execution command
+```bash
+python -m pip install -r requirements.txt
+python experiment.py
+```
+
+## Screenshots
+- [Output preview](screenshots/output_preview.png)
+- [Processed output](screenshots/processed_output.png)
+
+
+## Notes
+- This folder is self-contained and does not import code or data from another experiment.
+- Face/eye/smile cascades are supplied by the installed OpenCV package. Use images you have permission to process.
+- Experiment 25 uses classical contour/shape candidate localization, not a trained watch classifier. Experiment 28 marks moving regions using background subtraction, not a trained vehicle classifier.
